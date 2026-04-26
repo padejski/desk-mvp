@@ -3,7 +3,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PILOT_PASSWORD = "desk2026";
-const API_URL = "https://api.anthropic.com/v1/messages";
+const API_URL = "/api/proxy";
 const MODEL = "claude-sonnet-4-20250514";
 
 const FORMATS = [
