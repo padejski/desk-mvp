@@ -67,21 +67,22 @@ Return ONLY this JSON:
     icon: "◎", color: "#7c1f1f",
     desc: "Claims scored 1–10 for verification urgency",
     webSearch: true,
-    prompt: (format, beat, sensitive) => `You are a rigorous fact-checker at a local news outlet. Extract every checkable claim from this story.
+    prompt: (format, beat, sensitive) => `You are a rigorous fact-checker at a local news outlet. Extract checkable claims from this story.
 FORMAT: ${format}${beat ? ` | BEAT: ${beat}` : ""}
 ${sensitive ? "Do not expose source identities. Redact names in your output where sensitive." : ""}
 Urgency score 1-10: 10 = high-stakes + unverified + potentially wrong. 1 = routine low-risk claim.
-For local news: pay special attention to official statistics, meeting dates, budget figures, crime stats, names and titles of officials.${beat === "Crime & Courts" ? " Crime stories: verify charges, case status, names of accused carefully." : ""}${beat === "Government & Politics" ? " Government stories: verify vote counts, budget figures, official titles, meeting dates." : ""}${beat === "Health" ? " Health stories: verify statistics, treatment claims, institutional affiliations of sources." : ""}
+Beat context: ` + beatFactContext(beat) + `
+IMPORTANT: Limit output to the 8 most urgent claims only. Keep every string value on a single line. Do not use apostrophes or quotation marks inside string values - rephrase to avoid them.
 Return ONLY this JSON:
 {
-  "score": <1-10, inverse of avg urgency — high score means story is well-verified>,
+  "score": <1-10, high score means story is well-verified>,
   "traffic_light": "green|amber|red",
   "summary": "2 sentence overall assessment",
   "total_claims": <n>,
   "high_priority_count": <claims scoring 7-10>,
   "claims": [
     {
-      "claim": "near-exact quote of claim",
+      "claim": "brief description of the claim without quotes",
       "type": "statistic|date|name|event|quote|attribution|other",
       "assessment": "verified|unverified|disputed|likely_correct|needs_verification",
       "urgency": <1-10>,
@@ -95,7 +96,7 @@ Return ONLY this JSON:
     id: "copyedit", label: "Copyedit", order: 3, core: true,
     icon: "✎", color: "#1a4a2a",
     desc: "Grammar, AP style, consistency, clarity",
-    prompt: (format, beat) => "You are a senior copyeditor. Review this story for all copy issues. Apply AP Style unless a house style guide has been provided.\nFORMAT: " + format + (beat ? " | BEAT: " + beat : "") + "\nFormat-specific standards: " + formatContext(format) + "\nFor local news: check proper nouns carefully. Official names of local bodies, titles, geographic names.\nReturn ONLY this JSON:\n{\n  \"score\": <1-10, 10 = clean copy>,\n  \"traffic_light\": \"green|amber|red\",\n  \"overall_grade\": \"A|B|C|D|F\",\n  \"summary\": \"2 sentence assessment\",\n  \"error_count\": <n>,\n  \"severity_breakdown\": {\"critical\": <n>, \"moderate\": <n>, \"minor\": <n>},\n  \"issues\": [\n    {\n      \"quote\": \"exact phrase with error (max 10 words)\",\n      \"type\": \"grammar|style|punctuation|consistency|clarity|other\",\n      \"severity\": \"critical|moderate|minor\",\n      \"issue\": \"what is wrong\",\n      \"fix\": \"corrected version\"\n    }\n  ],\n  \"style_notes\": [\"general observation\", \"...\"]\n}"
+    prompt: (format, beat) => "You are a senior copyeditor. Review this story for copy issues. Apply AP Style unless a house style guide has been provided.\nFORMAT: " + format + (beat ? " | BEAT: " + beat : "") + "\nFormat-specific standards: " + formatContext(format) + "\nFor local news: check proper nouns carefully. Official names of local bodies, titles, geographic names.\nIMPORTANT: Limit output to the 10 most important issues only. Keep every string value on a single line. Do not use apostrophes or quotation marks inside string values - rephrase to avoid them.\nReturn ONLY this JSON:\n{\n  \"score\": <1-10, 10 = clean copy>,\n  \"traffic_light\": \"green|amber|red\",\n  \"overall_grade\": \"A|B|C|D|F\",\n  \"summary\": \"2 sentence assessment without quotes or apostrophes\",\n  \"error_count\": <n>,\n  \"severity_breakdown\": {\"critical\": <n>, \"moderate\": <n>, \"minor\": <n>},\n  \"issues\": [\n    {\n      \"quote\": \"brief description of the problem location without quotes\",\n      \"type\": \"grammar|style|punctuation|consistency|clarity|other\",\n      \"severity\": \"critical|moderate|minor\",\n      \"issue\": \"what is wrong described without apostrophes\",\n      \"fix\": \"corrected version or recommendation\"\n    }\n  ],\n  \"style_notes\": [\"general observation\", \"...\"]\n}"
   },
   {
     id: "legal", label: "Legal Review", order: 4, core: true,
@@ -263,15 +264,29 @@ async function callModule(mod, story, format, beat, sensitivity, adminDocs, sign
     signal
   });
 
-  if (!res.ok) throw new Error(`API ${res.status}`);
+  if (!res.ok) throw new Error("API " + res.status);
   const data = await res.json();
-  const text = data.content.filter(b => b.type === "text").map(b => b.text).join("");
-  const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-  try { return JSON.parse(clean); }
-  catch {
-    const m = clean.match(/\{[\s\S]*\}/);
-    if (m) return JSON.parse(m[0]);
-    throw new Error("JSON parse failed");
+
+  const raw = data.content.filter(b => b.type === "text").map(b => b.text).join("");
+  const stripped = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  const match = stripped.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("No JSON found in response");
+
+  const sanitized = match[0]
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\r/g, "")
+    .replace(/\t/g, " ")
+    .replace(/\n\s*/g, " ");
+
+  try {
+    return JSON.parse(sanitized);
+  } catch {
+    const partial = sanitized.replace(/,\s*([}\]])/g, "$1");
+    try {
+      return JSON.parse(partial);
+    } catch (e) {
+      throw new Error("JSON parse failed: " + e.message);
+    }
   }
 }
 
@@ -759,23 +774,18 @@ export default function DeskMVP() {
     setView("running");
     abortRef.current = new AbortController();
 
-    // Run in batches of 3 to avoid rate limiting
-    const BATCH_SIZE = 3;
-    for (let i = 0; i < toRun.length; i += BATCH_SIZE) {
-      const batch = toRun.slice(i, i + BATCH_SIZE);
-      batch.forEach(mod => setModuleStatus(p => ({ ...p, [mod.id]: "running" })));
-      await Promise.all(batch.map(async (mod) => {
-        try {
-          const r = await callModule(mod, story, format, beat, sensitivity, adminDocs, abortRef.current.signal);
-          setResults(p => ({ ...p, [mod.id]: r }));
-          setModuleStatus(p => ({ ...p, [mod.id]: "done" }));
-        } catch (e) {
-          setModuleStatus(p => ({ ...p, [mod.id]: "error" }));
-          setResults(p => ({ ...p, [mod.id]: { error: e.message } }));
-        }
-      }));
-      // Small pause between batches
-      if (i + BATCH_SIZE < toRun.length) await new Promise(r => setTimeout(r, 1000));
+    for (const mod of toRun) {
+      if (abortRef.current.signal.aborted) break;
+      setModuleStatus(p => ({ ...p, [mod.id]: "running" }));
+      try {
+        const r = await callModule(mod, story, format, beat, sensitivity, adminDocs, abortRef.current.signal);
+        setResults(p => ({ ...p, [mod.id]: r }));
+        setModuleStatus(p => ({ ...p, [mod.id]: "done" }));
+      } catch (e) {
+        setModuleStatus(p => ({ ...p, [mod.id]: "error" }));
+        setResults(p => ({ ...p, [mod.id]: { error: e.message } }));
+      }
+      await new Promise(r => setTimeout(r, 800));
     }
 
     setActiveTab(toRun[0].id);
