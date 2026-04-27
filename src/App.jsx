@@ -67,36 +67,13 @@ Return ONLY this JSON:
     icon: "◎", color: "#7c1f1f",
     desc: "Claims scored 1–10 for verification urgency",
     webSearch: true,
-    prompt: (format, beat, sensitive) => `You are a rigorous fact-checker at a local news outlet. Extract checkable claims from this story.
-FORMAT: ${format}${beat ? ` | BEAT: ${beat}` : ""}
-${sensitive ? "Do not expose source identities. Redact names in your output where sensitive." : ""}
-Urgency score 1-10: 10 = high-stakes + unverified + potentially wrong. 1 = routine low-risk claim.
-Beat context: ` + beatFactContext(beat) + `
-IMPORTANT: Limit output to the 8 most urgent claims only. Keep every string value on a single line. Do not use apostrophes or quotation marks inside string values - rephrase to avoid them.
-Return ONLY this JSON:
-{
-  "score": <1-10, high score means story is well-verified>,
-  "traffic_light": "green|amber|red",
-  "summary": "2 sentence overall assessment",
-  "total_claims": <n>,
-  "high_priority_count": <claims scoring 7-10>,
-  "claims": [
-    {
-      "claim": "brief description of the claim without quotes",
-      "type": "statistic|date|name|event|quote|attribution|other",
-      "assessment": "verified|unverified|disputed|likely_correct|needs_verification",
-      "urgency": <1-10>,
-      "notes": "what is known and why this score",
-      "recommendation": "specific action for human fact-checker"
-    }
-  ]
-}`
+    prompt: (format, beat, sensitive) => "You are a rigorous fact-checker at a local news outlet.\nFORMAT: " + format + (beat ? " | BEAT: " + beat : "") + "\n" + (sensitive ? "SENSITIVE: Do not expose source identities.\n" : "") + "Beat context: " + beatFactContext(beat) + "\nUrgency score 1-10: 10 = high-stakes unverified claim. 1 = routine low-risk.\nCRITICAL RULES FOR OUTPUT:\n- Maximum 8 claims\n- Do NOT copy text from the story into claim field. Describe each claim in your own words.\n- No apostrophes in any field. Write cannot instead of can't, does not instead of doesn't etc.\n- All strings must be single line, no line breaks inside values\n- Return ONLY valid JSON, nothing else\n{\n  \"score\": <1-10>,\n  \"traffic_light\": \"green|amber|red\",\n  \"summary\": \"2 sentence assessment\",\n  \"total_claims\": <n>,\n  \"high_priority_count\": <n>,\n  \"claims\": [\n    {\n      \"claim\": \"description of the claim in your own words no quotes\",\n      \"type\": \"statistic|date|name|event|attribution|other\",\n      \"assessment\": \"verified|unverified|disputed|likely_correct|needs_verification\",\n      \"urgency\": <1-10>,\n      \"notes\": \"what is known about this claim\",\n      \"recommendation\": \"action for human fact-checker\"\n    }\n  ]\n}"
   },
   {
     id: "copyedit", label: "Copyedit", order: 3, core: true,
     icon: "✎", color: "#1a4a2a",
     desc: "Grammar, AP style, consistency, clarity",
-    prompt: (format, beat) => "You are a senior copyeditor. Review this story for copy issues. Apply AP Style unless a house style guide has been provided.\nFORMAT: " + format + (beat ? " | BEAT: " + beat : "") + "\nFormat-specific standards: " + formatContext(format) + "\nFor local news: check proper nouns carefully. Official names of local bodies, titles, geographic names.\nIMPORTANT: Limit output to the 10 most important issues only. Keep every string value on a single line. Do not use apostrophes or quotation marks inside string values - rephrase to avoid them.\nReturn ONLY this JSON:\n{\n  \"score\": <1-10, 10 = clean copy>,\n  \"traffic_light\": \"green|amber|red\",\n  \"overall_grade\": \"A|B|C|D|F\",\n  \"summary\": \"2 sentence assessment without quotes or apostrophes\",\n  \"error_count\": <n>,\n  \"severity_breakdown\": {\"critical\": <n>, \"moderate\": <n>, \"minor\": <n>},\n  \"issues\": [\n    {\n      \"quote\": \"brief description of the problem location without quotes\",\n      \"type\": \"grammar|style|punctuation|consistency|clarity|other\",\n      \"severity\": \"critical|moderate|minor\",\n      \"issue\": \"what is wrong described without apostrophes\",\n      \"fix\": \"corrected version or recommendation\"\n    }\n  ],\n  \"style_notes\": [\"general observation\", \"...\"]\n}"
+    prompt: (format, beat) => "You are a senior copyeditor. Review this story for copy issues.\nFORMAT: " + format + (beat ? " | BEAT: " + beat : "") + "\nFormat standards: " + formatContext(format) + "\nCRITICAL RULES FOR OUTPUT:\n- Maximum 10 issues\n- Do NOT copy text from the story into the quote field. Describe the location and error in your own words.\n- No apostrophes in any field. Write cannot instead of can not, does not instead of doesn not etc.\n- All strings must be single line, no line breaks inside values\n- Return ONLY valid JSON, nothing else\n{\n  \"score\": <1-10>,\n  \"traffic_light\": \"green|amber|red\",\n  \"overall_grade\": \"A|B|C|D|F\",\n  \"summary\": \"2 sentence assessment\",\n  \"error_count\": <n>,\n  \"severity_breakdown\": {\"critical\": <n>, \"moderate\": <n>, \"minor\": <n>},\n  \"issues\": [\n    {\n      \"quote\": \"describe where the error is without copying story text\",\n      \"type\": \"grammar|style|punctuation|consistency|clarity|other\",\n      \"severity\": \"critical|moderate|minor\",\n      \"issue\": \"what is wrong described without apostrophes\",\n      \"fix\": \"corrected version or recommendation\"\n    }\n  ],\n  \"style_notes\": [\"observation\", \"...\"]\n}"
   },
   {
     id: "legal", label: "Legal Review", order: 4, core: true,
@@ -243,14 +220,14 @@ async function callModule(mod, story, format, beat, sensitivity, adminDocs, sign
   const formatLabel = FORMATS.find(f => f.id === format)?.label || format;
   const beatLabel = beat ? (BEATS.find(b => b.id === beat)?.label || beat) : null;
   const isSensitive = sensitivity === "sensitive";
-  const sensitiveNote = isSensitive ? "\nSENSITIVE STORY: Minimize identifying details in output. Do not repeat source names unnecessarily." : "";
-  const docsNote = adminDocs ? "\nNEWSROOM REFERENCE DOCS:\n" + adminDocs.slice(0, 1200) : "";
+  const sensitiveNote = isSensitive ? "\nSENSITIVE STORY: Minimize identifying details in output." : "";
+  const docsNote = adminDocs ? "\nNEWSROOM REFERENCE DOCS:\n" + adminDocs.slice(0, 800) : "";
 
   const body = {
     model: MODEL,
     max_tokens: 1000,
     system: mod.prompt(formatLabel, beatLabel, isSensitive) + sensitiveNote + docsNote,
-    messages: [{ role: "user", content: "FORMAT: " + formatLabel + (beatLabel ? " | BEAT: " + beatLabel : "") + "\n\nSTORY TEXT:\n" + story }]
+    messages: [{ role: "user", content: "FORMAT: " + formatLabel + (beatLabel ? " | BEAT: " + beatLabel : "") + "\n\nSTORY:\n" + story.slice(0, 3000) }]
   };
 
   if (mod.webSearch) {
@@ -272,21 +249,22 @@ async function callModule(mod, story, format, beat, sensitivity, adminDocs, sign
   const match = stripped.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("No JSON found in response");
 
-  const sanitized = match[0]
+  // Aggressive sanitize: remove all control chars, collapse whitespace
+  let s = match[0]
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .replace(/\r/g, "")
-    .replace(/\t/g, " ")
-    .replace(/\n\s*/g, " ");
+    .replace(/\t/g, " ");
 
-  try {
-    return JSON.parse(sanitized);
-  } catch {
-    const partial = sanitized.replace(/,\s*([}\]])/g, "$1");
-    try {
-      return JSON.parse(partial);
-    } catch (e) {
-      throw new Error("JSON parse failed: " + e.message);
-    }
+  // Collapse newlines inside JSON — the #1 cause of parse failures
+  // Only collapse newlines that are inside string values
+  s = s.replace(/"([^"]*)"/g, (m) => m.replace(/\n/g, " ").replace(/\s+/g, " "));
+
+  try { return JSON.parse(s); }
+  catch {
+    // Remove trailing commas before ] or }
+    const cleaned = s.replace(/,(\s*[}\]])/g, "$1");
+    try { return JSON.parse(cleaned); }
+    catch (e) { throw new Error("Parse failed: " + e.message.slice(0, 80)); }
   }
 }
 
@@ -785,7 +763,7 @@ export default function DeskMVP() {
         setModuleStatus(p => ({ ...p, [mod.id]: "error" }));
         setResults(p => ({ ...p, [mod.id]: { error: e.message } }));
       }
-      await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 2000));
     }
 
     setActiveTab(toRun[0].id);
